@@ -4,12 +4,15 @@
 #                                                                             #
 #   Description     Display information about HP Smart Update CPnnnnnn.EXE    #
 #                                                                             #
-#   Notes                                                                     #
+#   Notes           TO DO: Rework the XML extraction code, so that it finds   #
+#                   it even if the Smart Update name does not contain the     #
+#                   CPnnnnnn reference anymore.                               #
 #                                                                             #
 #   History                                                                   #
 #    2014-10-21 JFL Created this script.                                      #
 #    2014-12-01 JFL Renamed this script, to be more coherent with HPSUM name. #
 #    2015-10-06 JFL Fixed debug output, and added option -Quiet.              #
+#    2016-01-15 JFL Bug fix: Work with extended names with a description.     #
 #                                                                             #
 ###############################################################################
 
@@ -71,7 +74,7 @@ Param (
 Begin {
   
 # If the -Version switch is specified, display the script version and exit.
-$scriptVersion = "2015-10-06"
+$scriptVersion = "2016-01-15"
 if ($Version) {
   echo $scriptVersion
   exit
@@ -183,6 +186,10 @@ Process {
     $absName = Get-AbsolutePath $_
     $Leaf = Split-Path $absName -Leaf
     $Base = $Leaf -replace ".exe$",""
+    # Allow cases when a Smart Update has been renamed with a description along with the CPnnnnnn reference
+    if ($base -match "cp\d+") {
+      $base = $matches[0]
+    }
     $xmlName = "${Base}.xml"
     Write-Verbose "Extracting $xmlName from '$absName'"
     try {
