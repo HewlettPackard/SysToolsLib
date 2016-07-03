@@ -14,6 +14,8 @@
 #    2015-10-06 JFL Fixed debug output, and added option -Quiet.              #
 #    2016-01-15 JFL Bug fix: Work with extended names with a description.     #
 #                                                                             #
+#         © Copyright 2016 Hewlett Packard Enterprise Development LP          #
+# Licensed under the Apache 2.0 license - www.apache.org/licenses/LICENSE-2.0 #
 ###############################################################################
 
 <#
