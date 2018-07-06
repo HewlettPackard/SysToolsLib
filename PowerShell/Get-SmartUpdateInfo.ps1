@@ -13,6 +13,9 @@
 #    2014-12-01 JFL Renamed this script, to be more coherent with HPSUM name. #
 #    2015-10-06 JFL Fixed debug output, and added option -Quiet.              #
 #    2016-01-15 JFL Bug fix: Work with extended names with a description.     #
+#    2018-07-06 JFL Added support for wildcard in the arguments.              #
+#                   Added support for files renamed without the CPnnnnnn part.#
+#                   Display a warning when encountering an HP SP*.exe file.   #
 #                                                                             #
 #         © Copyright 2016 Hewlett Packard Enterprise Development LP          #
 # Licensed under the Apache 2.0 license - www.apache.org/licenses/LICENSE-2.0 #
@@ -28,6 +31,10 @@
   name, content, version, release date, description, category, etc.
 
   Requires PowerShell 3 with .NET 4.5 installed.
+  
+  Note: Do not confuse HPE "CPnnnnnn.EXE" smart updates, and HP "SPnnnnnn.exe"
+  support programs. This script handles HPE's CP*.exe, but not HP's SP*.exe,
+  as the latter have no standard XML descriptor file.
 
   .PARAMETER Name
   File name(s) of the Smart Update(s).
@@ -51,22 +58,32 @@
   Get all available information about a specific Smart Update.
 
   .EXAMPLE
+  C:\PS> Get-SmartUpdateInfo cp*.exe | ft -a
+  Get default information about all Smart Updates in the current directory.
+
+  .EXAMPLE
   C:\PS> dir | Get-SmartUpdateInfo | ft -a
   Get default information about all Smart Updates in the current directory.
 #>
 
 [CmdletBinding(DefaultParameterSetName='GetInfo')]
 Param (
-  [Parameter(ParameterSetName='GetInfo', Position=0, ValueFromPipeline=$true, Mandatory=$true)]
+  [Parameter(ParameterSetName='GetFileInfo', Position=0, ValueFromPipeline=$true, Mandatory=$true)]
+  [System.IO.FileSystemInfo[]]$File,	# Smart Update FileSystemInfo
+
+  [Parameter(ParameterSetName='GetNameInfo', Position=0, ValueFromPipeline=$true, Mandatory=$true)]
   [String[]]$Name,			# Smart Update name
 
-  [Parameter(ParameterSetName='GetInfo')]
+  [Parameter(ParameterSetName='GetNameInfo')]
+  [Parameter(ParameterSetName='GetFileInfo')]
   [String]$Lang = "en",			# The default language to use for localized fields
 
-  [Parameter(ParameterSetName='GetInfo')]
+  [Parameter(ParameterSetName='GetNameInfo')]
+  [Parameter(ParameterSetName='GetFileInfo')]
   [Switch]$V,				# If true, display verbose information
 
-  [Parameter(ParameterSetName='GetInfo')]
+  [Parameter(ParameterSetName='GetNameInfo')]
+  [Parameter(ParameterSetName='GetFileInfo')]
   [Switch]$Quiet,			# If true, do NOT display debug or verbose information
 
   [Parameter(ParameterSetName='Version', Mandatory=$true)]
@@ -76,7 +93,7 @@ Param (
 Begin {
   
 # If the -Version switch is specified, display the script version and exit.
-$scriptVersion = "2016-01-15"
+$scriptVersion = "2018-07-06"
 if ($Version) {
   echo $scriptVersion
   exit
@@ -126,20 +143,6 @@ if ($V -or ($VerbosePreference -ne "SilentlyContinue")) {
 
 #-----------------------------------------------------------------------------#
 
-# Convert a relative or absolute path to a canonic absolute path.
-Function Get-AbsolutePath ($Path) {
-  # System.IO.Path.Combine has two properties making it necesarry here:
-  #   1) correctly deals with situations where $Path (the second term) is an absolute path
-  #   2) correctly deals with situations where $Path (the second term) is relative
-  # (join-path) commandlet does not have this first property
-  $Path = [System.IO.Path]::Combine( ((pwd).Path), ($Path) );
-
-  # this piece strips out any relative path modifiers like '..' and '.'
-  $Path = [System.IO.Path]::GetFullPath($Path);
-
-  return $Path;
-}
-
 # Get a translated element
 Function Get-TranslatedString ($xmlText, $xpath, $Lang) {
   $node = (Select-Xml "$xpath[@lang='$Lang']" -Content $xmlText).Node
@@ -184,13 +187,29 @@ $PSStandardMembers = [System.Management.Automation.PSMemberInfo[]]@($defaultDisp
 } ; # End of the Begin block
 
 Process {
-  $Name | % {
-    $absName = Get-AbsolutePath $_
-    $Leaf = Split-Path $absName -Leaf
-    $Base = $Leaf -replace ".exe$",""
+  # Note: PowerShell is inconsistent in the way it converts System.IO.FileSystemInfo to string:
+  # "$((dir \)[-1])" = _Backup_Files.txt
+  # "$((dir \*.txt)[-1])" = C:\_Backup_Files.txt
+  # This makes it unreliable to use just a String argument, as the path is sometimes lost.
+  # Instead, accept either string or System.IO.FileSystemInfo objects
+  if ($File) { # We got a System.IO.FileSystemInfo object
+    Write-Debug "Process FileSystemInfo '$($File.FullName)'"
+    $Files = $File
+  } else { # We got a string object
+    Write-Debug "Process String '$Name'"
+    $Files = dir $Name # Allow processing string arguments that do contain wildcards
+  }
+  $Files | % {
+    Write-Debug "Inner loop: File='$_' ; PSIsContainer=$($_.PSIsContainer)"
+    if ($_.PSIsContainer) { return } # Skip subdirectories
+    $File = $_
+    $absName = $File.FullName
+    $Base = $File.BaseName
     # Allow cases when a Smart Update has been renamed with a description along with the CPnnnnnn reference
-    if ($base -match "cp\d+") {
+    if ($base -match "cp\d\d\d\d+") {
       $base = $matches[0]
+    } else {
+      $base = "cp*"
     }
     $xmlName = "${Base}.xml"
     Write-Verbose "Extracting $xmlName from '$absName'"
@@ -200,10 +219,11 @@ Process {
       if (!$zip) {
       	throw "Can't open Zip file '$absName'"
       }
-      $xmlEntry = $zip.Entries | where {$_.Name -eq $xmlName}
+      $xmlEntry = $zip.Entries | where {$_.Name -like $xmlName}
       if (!$xmlEntry) {
       	throw "Can't find $xmlName in '$absName'"
       }
+      $Base = $xmlEntry.Name -replace ".xml$",""
       $hXmlEntry = $xmlEntry.open()
       $size = $xmlEntry.Length
       $bytes = New-Object Byte[] $size
@@ -224,6 +244,7 @@ Process {
 
       # Create an object with all the information we have
       $object = New-Object PSObject -Property @{
+      	FileName = $absName
 	Name = $Base
 	Content = $cpName
 	Version = $cpVersion
@@ -239,13 +260,18 @@ Process {
       # Output the result object
       $object
     } catch {
+      $msg = $_.Exception.Message
       # Fail silently in case of error, except in debug mode
+      # This allows passing in all files in the directory, and get results for the valid Smart Updates only.
       if ($Debug) {
-	$msg = $_.Exception.Message
 	Write-Error "Error: $msg"
       }
-      # This allows passing in all files in the directory, and get results for the valid Smart Updates only.
-      Write-Verbose "Skipping '$absName', which does not refer to a Smart Update"
+      # Special case of a common error that we want to point out anyway
+      if ($File.Name -match "sp\d\d\d\d.*\.exe") {
+	Write-Warning "'$absName' looks like an HP SP*.exe Support Program, not like an HPE CP*.exe Smart Update."
+      }
+      # In verbose mode, make it clear that we saw the file, and why we skipped it 
+      Write-Verbose "Skipping '$absName', which is not a Smart Update"
     }
   }
 }
